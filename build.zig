@@ -20,6 +20,17 @@ pub fn build(b: *std.Build) !void {
         .win_wchar = b.option(bool, "win_wchar", "Use UTF-16 wchar_t and UNICODE with Windows API") orelse true,
     };
 
+    // Cross-compile system paths, passed explicitly rather than via --sysroot or
+    // --search-prefix: both of those are graph-wide, so they also hit native host-tool
+    // steps in the same build graph (e.g. this package's own opengl-generator, which
+    // then fails with "unable to find libSystem system library"), and --search-prefix
+    // never reaches translate-c.
+    const cross_paths = .{
+        .include = b.option(std.Build.LazyPath, "system_include_path", "Target system include path (for cross-compiling)"),
+        .framework = b.option(std.Build.LazyPath, "system_framework_path", "Target system framework path (for cross-compiling to macOS)"),
+        .library = b.option(std.Build.LazyPath, "library_path", "Target system library path (for cross-compiling)"),
+    };
+
     const options_step = b.addOptions();
     inline for (std.meta.fields(@TypeOf(options))) |option| {
         options_step.addOption(option.type, option.name, @field(options, option.name));
@@ -75,40 +86,51 @@ pub fn build(b: *std.Build) !void {
 
     switch (platform) {
         .x11 => {
-            if (b.sysroot) |sysroot| {
-                pugl.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ sysroot, "usr/include" }) });
-                pugl.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ sysroot, "usr/lib" }) });
-            } else if (builtin.target.os.tag != .linux) {
-                std.debug.print("error: cross-compiling to Linux requires --sysroot pointing at a Linux sysroot\n", .{});
-                std.process.exit(1);
+            // Cross-compiling to Linux from a non-Linux host: the host's pkg-config
+            // (e.g. Homebrew's on macOS) resolves X11/GL to host-arch libs. These come
+            // from plain absolute -Dsystem_include_path/-Dlibrary_path options (NOT
+            // --sysroot): a global --sysroot also applies to native host-tool compiles
+            // elsewhere in the build graph (e.g. this package's own opengl-generator)
+            // and breaks those ("unable to find libSystem system library"), so
+            // headers/libs are supplied directly instead.
+            const cross_linux = builtin.os.tag != .linux;
+            const use_pkg_config: std.Build.Module.SystemLib.UsePkgConfig = if (cross_linux) .no else .yes;
+            if (cross_linux) {
+                if (cross_paths.include) |p| pugl.addSystemIncludePath(p);
+                if (cross_paths.library) |p| pugl.addLibraryPath(p);
+                if (cross_paths.include == null or cross_paths.library == null) {
+                    std.debug.print("error: cross-compiling to Linux requires -Dsystem_include_path and -Dlibrary_path pointing at a Linux sysroot's usr/include and usr/lib (X11/GL headers+libs)\n", .{});
+                    std.process.exit(1);
+                }
             }
 
-            pugl.linkSystemLibrary("X11", .{});
-            pugl.linkSystemLibrary("Xrender", .{});
+            pugl.linkSystemLibrary("X11", .{ .use_pkg_config = use_pkg_config });
+            pugl.linkSystemLibrary("Xrender", .{ .use_pkg_config = use_pkg_config });
 
             try c_flags.append(b.allocator, "-D_POSIX_C_SOURCE=200809L");
 
             if (options.use_xcursor) {
-                pugl.linkSystemLibrary("Xcursor", .{});
+                pugl.linkSystemLibrary("Xcursor", .{ .use_pkg_config = use_pkg_config });
                 try c_flags.append(b.allocator, "-DUSE_XCURSOR=1");
             }
 
             if (options.use_xrandr) {
-                pugl.linkSystemLibrary("Xrandr", .{});
+                pugl.linkSystemLibrary("Xrandr", .{ .use_pkg_config = use_pkg_config });
                 try c_flags.append(b.allocator, "-DUSE_XRANDR=1");
             }
 
             if (options.use_xsync) {
-                pugl.linkSystemLibrary("Xext", .{});
+                pugl.linkSystemLibrary("Xext", .{ .use_pkg_config = use_pkg_config });
                 try c_flags.append(b.allocator, "-DUSE_XSYNC=1");
             }
         },
         .mac => {
-            if (b.sysroot) |sysroot| {
-                pugl.addSystemFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sysroot, "System/Library/Frameworks" }) });
-                pugl.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ sysroot, "usr/include" }) });
-            } else if (builtin.target.os.tag != .macos) {
-                std.debug.print("error: cross-compiling to macOS requires --sysroot pointing at a macOS SDK\n", .{});
+            // Native macOS builds need nothing here: clang locates the system SDK itself.
+            if (cross_paths.include) |p| pugl.addSystemIncludePath(p);
+            if (cross_paths.framework) |p| pugl.addSystemFrameworkPath(p);
+            if (cross_paths.library) |p| pugl.addLibraryPath(p);
+            if (builtin.os.tag != .macos and (cross_paths.include == null or cross_paths.framework == null or cross_paths.library == null)) {
+                std.debug.print("error: cross-compiling to macOS requires -Dsystem_include_path, -Dsystem_framework_path and -Dlibrary_path pointing at a macOS SDK's usr/include, System/Library/Frameworks and usr/lib\n", .{});
                 std.process.exit(1);
             }
 
@@ -162,7 +184,9 @@ pub fn build(b: *std.Build) !void {
     if (options.backend_opengl) {
         switch (platform) {
             // "GL" (not lowercase "gl") to match the actual libGL.so/.a name on Linux.
-            .x11 => pugl.linkSystemLibrary("GL", .{}),
+            .x11 => pugl.linkSystemLibrary("GL", .{
+                .use_pkg_config = if (builtin.os.tag != .linux) .no else .yes,
+            }),
             .win => pugl.linkSystemLibrary("opengl32", .{}),
             else => {},
         }
