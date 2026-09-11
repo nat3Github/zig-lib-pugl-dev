@@ -26,8 +26,8 @@ pub fn build(b: *std.Build) !void {
     // then fails with "unable to find libSystem system library"), and --search-prefix
     // never reaches translate-c.
     const cross_paths = .{
-        .include = b.option(std.Build.LazyPath, "system_include_path", "Target system include path (for cross-compiling)"),
-        .framework = b.option(std.Build.LazyPath, "system_framework_path", "Target system framework path (for cross-compiling to macOS)"),
+        .include = b.option(std.Build.LazyPath, "include_path", "Target system include path (for cross-compiling)"),
+        .framework = b.option(std.Build.LazyPath, "framework_path", "Target system framework path (for cross-compiling to macOS)"),
         .library = b.option(std.Build.LazyPath, "library_path", "Target system library path (for cross-compiling)"),
     };
 
@@ -88,7 +88,7 @@ pub fn build(b: *std.Build) !void {
         .x11 => {
             // Cross-compiling to Linux from a non-Linux host: the host's pkg-config
             // (e.g. Homebrew's on macOS) resolves X11/GL to host-arch libs. These come
-            // from plain absolute -Dsystem_include_path/-Dlibrary_path options (NOT
+            // from plain absolute -Dinclude_path/-Dlibrary_path options (NOT
             // --sysroot): a global --sysroot also applies to native host-tool compiles
             // elsewhere in the build graph (e.g. this package's own opengl-generator)
             // and breaks those ("unable to find libSystem system library"), so
@@ -99,7 +99,7 @@ pub fn build(b: *std.Build) !void {
                 if (cross_paths.include) |p| pugl.addSystemIncludePath(p);
                 if (cross_paths.library) |p| pugl.addLibraryPath(p);
                 if (cross_paths.include == null or cross_paths.library == null) {
-                    std.debug.print("error: cross-compiling to Linux requires -Dsystem_include_path and -Dlibrary_path pointing at a Linux sysroot's usr/include and usr/lib (X11/GL headers+libs)\n", .{});
+                    std.debug.print("error: cross-compiling to Linux requires -Dinclude_path and -Dlibrary_path pointing at a Linux sysroot's usr/include and usr/lib (X11/GL headers+libs)\n", .{});
                     std.process.exit(1);
                 }
             }
@@ -130,7 +130,7 @@ pub fn build(b: *std.Build) !void {
             if (cross_paths.framework) |p| pugl.addSystemFrameworkPath(p);
             if (cross_paths.library) |p| pugl.addLibraryPath(p);
             if (builtin.os.tag != .macos and (cross_paths.include == null or cross_paths.framework == null or cross_paths.library == null)) {
-                std.debug.print("error: cross-compiling to macOS requires -Dsystem_include_path, -Dsystem_framework_path and -Dlibrary_path pointing at a macOS SDK's usr/include, System/Library/Frameworks and usr/lib\n", .{});
+                std.debug.print("error: cross-compiling to macOS requires -Dinclude_path, -Dframework_path and -Dlibrary_path pointing at a macOS SDK's usr/include, System/Library/Frameworks and usr/lib\n", .{});
                 std.process.exit(1);
             }
 
